@@ -1,63 +1,33 @@
-//
-//  UIImage+PDF.h
-//
-//  Created by Nigel Barber on 15/10/2011.
-//  Copyright 2011 Mindbrix Limited. All rights reserved.
-//
+/*
+ UIImage+PDF.h
+ 
+ Copyright 2013 Standard Orbit Software, LLC. All rights reserved. <https://github.com/billgarrison/UIImage-PDF>
+ 
+ Open Sourced at GitHub: <git://github.com/billgarrison/UIImage-PDF.git>
+
+ Based on original work by Nigel Barber at <https://github.com/mindbrix/UIImage-PDF>
+
+ Copyright 2012 Nigel Timothy Barber - [@mindbrix](http://twitter.com/mindbrix). All rights reserved.
+ Permission is given to use this source code file without charge in any project, commercial or otherwise, entirely at your risk,
+ with the condition that any redistribution (in part or whole) of source code must retain this copyright and permission notice.
+ Attribution in compiled projects is appreciated but not required.
+ */
+
 
 #import <UIKit/UIKit.h>
-#import "UIView+Image.h"
-#import "PDFView.h"
-#import "NSData+MD5.h"
-#import "NSString+MD5.h"
+
+#define UIIMAGE_PDF_CACHEING  1
 
 
-#define UIIMAGE_PDF_CACHEING    1
+@interface UIImage (PDF)
+
++ (UIImage *) imageWithPDFURL:(NSURL *)fileURL atSize:(CGSize)size atPage:(size_t)page scale:(CGFloat)scale;
++ (UIImage *) imageWithPDFURL:(NSURL *)fileURL fitSize:(CGSize)size atPage:(size_t)page scale:(CGFloat)scale;
+
++ (UIImage *) imageWithPDFURL:(NSURL *)fileURL fitWidth:(CGFloat)width atPage:(size_t)page scale:(CGFloat)scale;
++ (UIImage *) imageWithPDFURL:(NSURL *)fileURL fitHeight:(CGFloat)height atPage:(size_t)page scale:(CGFloat)scale;
 
 
-@interface UIImage( PDF )
-
-+ (void)setShouldCacheInMemory:(BOOL)shouldCache;
-
-+(UIImage *) imageOrPDFNamed:(NSString *)resourceName; 
-+(UIImage *) imageOrPDFWithContentsOfFile:(NSString *)path;
-
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atSize:(CGSize)size atPage:(int)page;
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atSize:(CGSize)size;
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atWidth:(CGFloat)width atPage:(int)page;
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atWidth:(CGFloat)width;
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atHeight:(CGFloat)height atPage:(int)page;
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atHeight:(CGFloat)height;
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName fitSize:(CGSize)size atPage:(int)page;
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName fitSize:(CGSize)size;
-
-+(UIImage *) originalSizeImageWithPDFNamed:(NSString *)resourceName atPage:(int)page;
-+(UIImage *) originalSizeImageWithPDFNamed:(NSString *)resourceName;
-
-
-
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atSize:(CGSize)size atPage:(int)page;
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atSize:(CGSize)size;
-
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atWidth:(CGFloat)width atPage:(int)page;
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atWidth:(CGFloat)width;
-
-
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atHeight:(CGFloat)height atPage:(int)page;
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atHeight:(CGFloat)height;
-
-+(UIImage *) imageWithPDFURL:(NSURL *)URL fitSize:(CGSize)size atPage:(int)page;
-+(UIImage *) imageWithPDFURL:(NSURL *)URL fitSize:(CGSize)size;
-
-+(UIImage *) imageWithPDFData:(NSData *)data atSize:(CGSize)size atPage:(int)page;
-
-+(UIImage *) originalSizeImageWithPDFData:(NSData *)data;
-+(UIImage *) originalSizeImageWithPDFURL:(NSURL *)URL atPage:(int)page;
-+(UIImage *) originalSizeImageWithPDFURL:(NSURL *)URL;
-
++ (UIImage *) imageWithPDFData:(NSData *)data atSize:(CGSize)size atPage:(size_t)page scale:(CGFloat)scale;
 
 @end

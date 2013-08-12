@@ -11,7 +11,7 @@
 #import "UIImage+PDF.h"
 
 
-@interface UIImage_PDF_exampleViewController : UIViewController {
+@interface ExampleViewController : UIViewController {
 
 }
 

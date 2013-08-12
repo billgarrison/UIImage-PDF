@@ -37,20 +37,10 @@ ARC
 _**If your project doesn't use ARC**: you must add the `-fobjc-arc` compiler flag to `NSData+MD5.m`, `NSString+MD5.m`, `PDFView.m`, `UIImage+PDF.m` and `UIView+Image.m` in Target Settings ==> Build Phases ==> Compile Sources._
 
 
-Disk Cacheing 
+Disk Caching 
 --------------
 
-`UIImage+PDF` now transparently caches all rendered PDFs in `<Application_Home>/Library/Caches/__PDF_CACHE__`. This substantially improves application latency with large PDFs, especially on the new iPad. To disable cacheing, comment out `#define UIIMAGE_PDF_CACHEING    1` in `UIImage+PDF.h`.
-
-
-Memory Cacheing 
---------------
-
-`UIImage+PDF` can now use `NSCache` to cache rendered PDFs in memory. This feature is disabled by default. To enable it call:
-
-	[ UIImage setShouldCacheInMemory:YES ];
-
-
+`UIImage+PDF` now transparently caches all rendered PDFs in `<Application_Home>/Library/Caches/__PDF_CACHE__`. This substantially improves application latency with large PDFs, especially on the new iPad. To disable cacheing, comment out `#define UIIMAGE_PDF_CACHING    1` in `UIImage+PDF.h`.
 
 PDF file size
 -------------

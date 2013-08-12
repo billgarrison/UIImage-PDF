@@ -1,392 +1,304 @@
-//
-//  UIImage+PDF.m
-//
-//  Created by Nigel Barber on 15/10/2011.
-//  Copyright 2011 Mindbrix Limited. All rights reserved.
-//
-
-#import "UIImage+PDF.h"
-
-
-@implementation  UIImage( PDF )
-
-
-#pragma mark - Control cache
-
-static NSCache *_imagesCache;
-static BOOL _shouldCache = NO;
-
-/*!
- @abstract
- Set the caching in memory of images on and off
+/*
+ UIImage+PDF.m
  
- @param shouldCache to activate the caching
+ Copyright 2013 Standard Orbit Software, LLC. All rights reserved. <https://github.com/billgarrison/UIImage-PDF>
  
- @discussion this method sets up an NSCache for the images and the flag responsible to check them when reqeusted
+ Open Sourced at GitHub: <git://github.com/billgarrison/UIImage-PDF.git>
  
+ Based on original work by Nigel Barber at <https://github.com/mindbrix/UIImage-PDF>
+ 
+ Copyright 2012 Nigel Timothy Barber - [@mindbrix](http://twitter.com/mindbrix). All rights reserved.
+ Permission is given to use this source code file without charge in any project, commercial or otherwise, entirely at your risk,
+ with the condition that any redistribution (in part or whole) of source code must retain this copyright and permission notice.
+ Attribution in compiled projects is appreciated but not required.
  */
 
-+(void)setShouldCacheInMemory:(BOOL)shouldCache
+#import "UIImage+PDF.h"
+#import <CommonCrypto/CommonDigest.h>
+
+static UIImage *_PDFHelperRenderImage(NSURL *pdfURL, NSData *resourceData,  CGSize size, int page, CGFloat scale);
+static CGRect _PDFMediaRect(NSURL *pdfURL, int page);
+static size_t _PDFPageCount(NSURL *pdfURL);
+
+static NSString *MD5FromNSString(NSString *string)
 {
-    _shouldCache = shouldCache;
+	/* From: https://gist.github.com/1209911
+	 */
+	if ([string length] == 0) return nil;
     
-    if( _shouldCache && !_imagesCache )
-    {
-        _imagesCache = [[ NSCache alloc ] init ];
-    }
+	const char *cStr = [string UTF8String];
+	unsigned char result[16];
+	CC_MD5 (cStr, strlen (cStr), result); /* This is the md5 call */
+	return [NSString stringWithFormat:
+	        @"%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+	        result[0], result[1], result[2], result[3],
+	        result[4], result[5], result[6], result[7],
+	        result[8], result[9], result[10], result[11],
+	        result[12], result[13], result[14], result[15]
+            ];
 }
 
-
-#pragma mark - Convenience methods
-
-+(UIImage *) imageOrPDFNamed:(NSString *)resourceName
+static NSString *MD5FromNSData(NSData *data)
 {
-    if([[ resourceName pathExtension ] isEqualToString: @"pdf" ])
-    {
-        return [ UIImage originalSizeImageWithPDFNamed:resourceName ];
-    }
-    else
-    {
-        return [ UIImage imageNamed:resourceName ];
-    }
+	if (!data) return nil;
+    
+	unsigned char result[16];
+	CC_MD5 ([data bytes], [data length], result); /* This is the md5 call */
+	return [NSString stringWithFormat:
+	        @"%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+	        result[0], result[1], result[2], result[3],
+	        result[4], result[5], result[6], result[7],
+	        result[8], result[9], result[10], result[11],
+	        result[12], result[13], result[14], result[15]
+            ];
 }
 
+@implementation  UIImage (PDF)
 
-+(UIImage *) imageOrPDFWithContentsOfFile:(NSString *)path
+
+#pragma mark - Disk Cacheing
+
++ (NSURL *) PDFCacheURL
 {
-    if([[ path pathExtension ] isEqualToString: @"pdf" ])
-    {
-        return [ UIImage originalSizeImageWithPDFURL:[ NSURL fileURLWithPath:path ]];
-    }
-    else
-    {
-        return [ UIImage imageWithContentsOfFile:path ];
-    }
+    static NSURL *sPDFCacheURL = nil;
+
+#ifdef UIIMAGE_PDF_CACHEING
+
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSFileManager *fm = [NSFileManager new];
+        NSError *cacheSetupError = nil;
+        
+        NSURL *cacheURL = [[fm URLForDirectory:NSCachesDirectory inDomain:NSUserDomainMask appropriateForURL:nil create:YES error:&cacheSetupError]  URLByAppendingPathComponent:@"__UIIMAGE_PDF_CACHE__"];
+        
+        if (cacheURL) {
+            if ([fm createDirectoryAtURL:cacheURL withIntermediateDirectories:YES attributes:nil error:&cacheSetupError]) {
+                sPDFCacheURL = cacheURL;
+            }
+        }
+        
+        if (sPDFCacheURL == nil) {
+            NSLog (@"Error: failed to created cache directory for rendered PDF UImages: %@", cacheSetupError);
+        }
+    });
+#endif
+
+    return sPDFCacheURL;
 }
 
-
-#pragma mark - Cacheing
-
-+(NSString *)cacheFilenameForData:(NSData *)resourceData atSize:(CGSize)size atScaleFactor:(CGFloat)scaleFactor atPage:(int)page
++ (NSString *) cacheFilenameForData:(NSData *)resourceData atSize:(CGSize)size atScaleFactor:(CGFloat)scaleFactor atPage:(int)page
 {
-    NSString *cacheFilename = nil;
+	NSString *cachedName = nil;
     
 #ifdef UIIMAGE_PDF_CACHEING
     
-    NSFileManager *fileManager = [ NSFileManager defaultManager ];
+    CGSize scaledSize = CGSizeMake (size.width * scaleFactor, size.height * scaleFactor);
+	NSString *uniquedName = [NSString stringWithFormat:@"%@-%@-%d", MD5FromNSData (resourceData), NSStringFromCGSize (scaledSize), page];
     
-   
-    NSString *cacheRoot = [ NSString stringWithFormat:@"%@ - %@ - %d", [ resourceData MD5 ], NSStringFromCGSize(CGSizeMake( size.width * scaleFactor, size.height * scaleFactor )), page ];
+	NSString *MD5Hash = MD5FromNSString (uniquedName);
     
-    //NSLog( @"cacheRoot: %@", cacheRoot );
-    
-    NSString *MD5 = [ cacheRoot MD5 ];
-    
-    //NSLog( @"MD5: %@", MD5 );
-    
-    NSString *cachesDirectory = [ NSSearchPathForDirectoriesInDomains( NSCachesDirectory, NSUserDomainMask, YES ) objectAtIndex:0 ];
-    
-    NSString *cacheDirectory = [ NSString stringWithFormat:@"%@/__PDF_CACHE__", cachesDirectory ];
-    
-    //NSLog( @"cacheDirectory: %@", cacheDirectory );
-    
-    [ fileManager createDirectoryAtPath:cacheDirectory withIntermediateDirectories:YES attributes:nil error:NULL ];
-    
-    cacheFilename = [ NSString stringWithFormat:@"%@/%@.png", cacheDirectory, MD5 ];
-    
-    //NSLog( @"cacheFilename: %@", cacheFilename );
-    
+    cachedName = [[[[self PDFCacheURL] path] stringByAppendingPathComponent:MD5Hash] stringByAppendingPathExtension:@"png"];
 #endif
     
-    return cacheFilename;
+	return cachedName;
 }
 
 
-+(NSString *)cacheFilenameForURL:(NSURL *)resourceURL atSize:(CGSize)size atScaleFactor:(CGFloat)scaleFactor atPage:(int)page
++ (NSString *) cacheFilenameForURL:(NSURL *)URL atSize:(CGSize)size atScaleFactor:(CGFloat)scaleFactor atPage:(int)page
 {
-    NSString *cacheFilename = nil;
+	NSString *cachedName = nil;
     
 #ifdef UIIMAGE_PDF_CACHEING
     
-    NSFileManager *fileManager = [ NSFileManager defaultManager ];
+	NSFileManager *fileManager = [[NSFileManager alloc] init];
+	NSString *filePath = [URL path];
+	NSDictionary *fileAttributes = [fileManager attributesOfItemAtPath:filePath error:NULL];
+    CGSize scaledSize = CGSizeMake (size.width * scaleFactor, size.height * scaleFactor);
+
+	NSString *uniquedName = [NSString stringWithFormat:@"%@-%@-%@-%@-%d", [filePath lastPathComponent], fileAttributes[NSFileSize], fileAttributes[NSFileModificationDate], NSStringFromCGSize (scaledSize), page];
     
-    NSString *filePath = [ resourceURL path ];
-    
-    //NSLog( @"filePath: %@", filePath );
-    
-    NSDictionary *fileAttributes = [ fileManager attributesOfItemAtPath:filePath error:NULL ];
-    
-    //NSLog( @"fileAttributes: %@", fileAttributes );
-    
-    NSString *cacheRoot = [ NSString stringWithFormat:@"%@ - %@ - %@ - %@ - %d", [ filePath lastPathComponent ], [ fileAttributes objectForKey:NSFileSize ], [ fileAttributes objectForKey:NSFileModificationDate ], NSStringFromCGSize(CGSizeMake( size.width * scaleFactor, size.height * scaleFactor )), page ];
-    
-    //NSLog( @"cacheRoot: %@", cacheRoot );
-    
-    NSString *MD5 = [ cacheRoot MD5 ];
-    
-    //NSLog( @"MD5: %@", MD5 );
-    
-    NSString *cachesDirectory = [ NSSearchPathForDirectoriesInDomains( NSCachesDirectory, NSUserDomainMask, YES ) objectAtIndex:0 ];
-    
-    NSString *cacheDirectory = [ NSString stringWithFormat:@"%@/__PDF_CACHE__", cachesDirectory ];
-    
-    //NSLog( @"cacheDirectory: %@", cacheDirectory );
-    
-    [ fileManager createDirectoryAtPath:cacheDirectory withIntermediateDirectories:YES attributes:nil error:NULL ];
-    
-    cacheFilename = [ NSString stringWithFormat:@"%@/%@.png", cacheDirectory, MD5 ];
-    
-    //NSLog( @"cacheFilename: %@", cacheFilename );
-    
+	NSString *MD5Hash = MD5FromNSString (uniquedName);
+    cachedName = [[[[self PDFCacheURL] path] stringByAppendingPathComponent:MD5Hash] stringByAppendingPathExtension:@"png"];
+
 #endif
     
-    return cacheFilename;
+	return cachedName;
 }
 
 
-
-#pragma mark - Resource name
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atSize:(CGSize)size atPage:(int)page
++ (UIImage *) imageWithPDFData:(NSData *)data atSize:(CGSize)size atPage:(size_t)page scale:(CGFloat)scale
 {
-    return [ self imageWithPDFURL:[ PDFView resourceURLForName:resourceName ] atSize:size atPage:page ];
-}
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atSize:(CGSize)size
-{
-    return [ self imageWithPDFURL:[ PDFView resourceURLForName:resourceName ] atSize:size ];
-}
-
-
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atWidth:(CGFloat)width atPage:(int)page
-{
-    return [ self imageWithPDFURL:[ PDFView resourceURLForName:resourceName ] atWidth:width atPage:page ];
-}
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atWidth:(CGFloat)width
-{
-    return [ self imageWithPDFURL:[ PDFView resourceURLForName:resourceName ] atWidth:width ];
-}
-
-
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atHeight:(CGFloat)height atPage:(int)page
-{
-    return [ self imageWithPDFURL:[ PDFView resourceURLForName:resourceName ] atHeight:height atPage:page ];
-}
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName atHeight:(CGFloat)height
-{
-    return [ self imageWithPDFURL:[ PDFView resourceURLForName:resourceName ] atHeight:height ];
-}
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName fitSize:(CGSize)size atPage:(int)page
-{
-    return [ self imageWithPDFURL:[ PDFView resourceURLForName:resourceName] fitSize:size atPage:page ];
-}
-
-+(UIImage *) imageWithPDFNamed:(NSString *)resourceName fitSize:(CGSize)size
-{
-    return [ self imageWithPDFURL:[ PDFView resourceURLForName:resourceName] fitSize:size ];
-}
-
-
-+(UIImage *) originalSizeImageWithPDFNamed:(NSString *)resourceName atPage:(int)page
-{
-    return [ self originalSizeImageWithPDFURL:[ PDFView resourceURLForName:resourceName ] atPage:page ];
-}
-
-+(UIImage *) originalSizeImageWithPDFNamed:(NSString *)resourceName
-{
-    return [ self originalSizeImageWithPDFURL:[ PDFView resourceURLForName:resourceName ]];
-}
-
-+(UIImage *) originalSizeImageWithPDFData:(NSData *)data
-{
-    CGRect mediaRect = [ PDFView mediaRectForData:data atPage:1 ];
-
-    return [ UIImage imageWithPDFData:data atSize:mediaRect.size atPage:1 ];
-}
-
-#pragma mark - Resource URLs
-
-+(UIImage *) imageWithPDFData:(NSData *)data atSize:(CGSize)size atPage:(int)page
-{
-    UIImage *pdfImage = nil;
+	UIImage *image = nil;
     
-    NSString *cacheFilename = [ self cacheFilenameForData:data atSize:size atScaleFactor:[ UIScreen mainScreen ].scale atPage:page ];
+	NSString *cacheFilename = [self cacheFilenameForData:data atSize:size atScaleFactor:scale atPage:page];
     
-    if([[ NSFileManager defaultManager ] fileExistsAtPath:cacheFilename ])
+	if ([[NSFileManager defaultManager] fileExistsAtPath:cacheFilename])
     {
-       //NSLog( @"Cache hit" );
+		image = [UIImage imageWithCGImage:[[UIImage imageWithContentsOfFile:cacheFilename] CGImage] scale:scale orientation:UIImageOrientationUp];
+	}
+	else
+    {
+        image = _PDFHelperRenderImage(nil, data, size, page, scale);
         
-        pdfImage = [ UIImage imageWithCGImage:[[ UIImage imageWithContentsOfFile:cacheFilename ] CGImage ] scale:[ UIScreen mainScreen ].scale orientation:UIImageOrientationUp ];
-    }
-    else
+		if (cacheFilename) {
+			[UIImagePNGRepresentation(image) writeToFile:cacheFilename atomically:NO];
+		}
+	}
+    
+	return image;
+}
+
+
++ (UIImage *) imageWithPDFURL:(NSURL *)fileURL atSize:(CGSize)size atPage:(size_t)page scale:(CGFloat)scale
+{
+    if (fileURL == nil) return nil;
+    
+	UIImage *image = nil;
+    
+	NSString *cacheFilename = [self cacheFilenameForURL:fileURL atSize:size atScaleFactor:scale atPage:page];
+    
+	if ([[NSFileManager defaultManager] fileExistsAtPath:cacheFilename])
     {
-       //NSLog( @"Cache miss" );
-        
-        UIGraphicsBeginImageContextWithOptions( size, NO, [ UIScreen mainScreen ].scale );
-        
-        [ PDFView renderIntoContext:UIGraphicsGetCurrentContext() url:nil data:data size:size page:page ];
-        pdfImage = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-        
-        if( cacheFilename )
-        {
-            [ UIImagePNGRepresentation( pdfImage ) writeToFile:cacheFilename atomically:NO ];
-        }
-    }
-    
-    return pdfImage;
-}
-
-
-
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atSize:(CGSize)size atPage:(int)page
-{
-    UIImage *pdfImage = nil;
-    
-    NSString *cacheFilename = [ self cacheFilenameForURL:URL atSize:size atScaleFactor:[ UIScreen mainScreen ].scale atPage:page ];
-    
-    
-    /**
-     * Check in Memory cached image before checking file system
-     */
-    if (_shouldCache)
+		image = [UIImage imageWithCGImage:[[UIImage imageWithContentsOfFile:cacheFilename] CGImage] scale:scale orientation:UIImageOrientationUp];
+	}
+	else
     {
-        pdfImage = [_imagesCache objectForKey:cacheFilename];
-        if (pdfImage) return pdfImage;
-    }
-    
-    
-    if([[ NSFileManager defaultManager ] fileExistsAtPath:cacheFilename ])
-    {
-        //NSLog( @"Cache hit" );
-        
-        pdfImage = [ UIImage imageWithCGImage:[[ UIImage imageWithContentsOfFile:cacheFilename ] CGImage ] scale:[ UIScreen mainScreen ].scale orientation:UIImageOrientationUp ];
-    }
-    else 
-    {
-        //NSLog( @"Cache miss" );
-    
-        UIGraphicsBeginImageContextWithOptions( size, NO, [ UIScreen mainScreen ].scale );
-        
-        [ PDFView renderIntoContext:UIGraphicsGetCurrentContext() url:URL data:nil size:size page:page ];
-        pdfImage = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-        
-        if( cacheFilename )
-        {
-            [ UIImagePNGRepresentation( pdfImage ) writeToFile:cacheFilename atomically:NO ];
-        }
-    }
-    /**
-     * Cache image to in memory if active
-     */
-    
-    if (pdfImage && cacheFilename && _shouldCache)
-    {
-        [_imagesCache setObject:pdfImage forKey:cacheFilename];
-    }
-    
-	return pdfImage;
-}
+        image = _PDFHelperRenderImage(fileURL, nil, size, page, scale);
+		if (cacheFilename && image) {
+			[UIImagePNGRepresentation(image) writeToFile:cacheFilename atomically:NO];
+		}
+	}
 
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atSize:(CGSize)size
-{
-    return [ self imageWithPDFURL:URL atSize:size atPage:1 ];
-}
-
-
-+(UIImage *) imageWithPDFURL:(NSURL *)URL fitSize:(CGSize)size atPage:(int)page
-{
-    if ( URL == nil )
-    {
-        return nil;
-    }
-    
-    // Get dimensions
-    CGRect mediaRect = [ PDFView mediaRectForURL:URL atPage:page ];
-    
-    // Calculate scale factor
-    CGFloat scaleFactor = MAX(mediaRect.size.width / size.width, mediaRect.size.height / size.height);
-    
-    // Create new size
-    CGSize newSize = CGSizeMake( ceilf( mediaRect.size.width / scaleFactor ), ceilf( mediaRect.size.height / scaleFactor ));
-    
-    // Return image
-    return [ UIImage imageWithPDFURL:URL atSize:newSize atPage:page ];
-}
-
-+(UIImage *) imageWithPDFURL:(NSURL *)URL fitSize:(CGSize)size
-{
-    return [ UIImage imageWithPDFURL:URL fitSize:size atPage:1 ];
-}
-
-
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atWidth:(CGFloat)width atPage:(int)page
-{
-    if ( URL == nil )
-    {
-        return nil;
-    }
-    
-    CGRect mediaRect = [ PDFView mediaRectForURL:URL atPage:page ];
-    CGFloat aspectRatio = mediaRect.size.width / mediaRect.size.height;
-    
-    CGSize size = CGSizeMake( width, ceilf( width / aspectRatio ));
-    
-    return [ UIImage imageWithPDFURL:URL atSize:size atPage:page ];
-}
-
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atWidth:(CGFloat)width
-{
-    return [ UIImage imageWithPDFURL:URL atWidth:width atPage:1 ];
+	return image;
 }
 
 
 
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atHeight:(CGFloat)height atPage:(int)page
++ (UIImage *) imageWithPDFURL:(NSURL *)fileURL fitSize:(CGSize)size atPage:(size_t)page scale:(CGFloat)scale
 {
-    if ( URL == nil )
-    {
-        return nil;
-    }
+	/* Get dimensions */
+	CGRect mediaRect = _PDFMediaRect(fileURL, page);
     
-    CGRect mediaRect = [ PDFView mediaRectForURL:URL atPage:page ];
-    CGFloat aspectRatio = mediaRect.size.width / mediaRect.size.height;
+	/* Calculate scale factor */
+	CGFloat scaleFactor = MAX (mediaRect.size.width / size.width, mediaRect.size.height / size.height);
     
-    CGSize size = CGSizeMake( ceilf( height * aspectRatio ), height );
+	/* Create new size */
+	CGSize fittedSize = CGSizeMake (ceilf (mediaRect.size.width / scaleFactor), ceilf (mediaRect.size.height / scaleFactor));
     
-    return [ UIImage imageWithPDFURL:URL atSize:size atPage:page ];
-}
+	/* Return image */
+    return [UIImage imageWithPDFURL:fileURL atSize:fittedSize atPage:page scale:scale];
 
-+(UIImage *) imageWithPDFURL:(NSURL *)URL atHeight:(CGFloat)height
-{
-    return [ UIImage imageWithPDFURL:URL atHeight:height atPage:1 ];
 }
 
 
-
-+(UIImage *) originalSizeImageWithPDFURL:(NSURL *)URL atPage:(int)page
++ (UIImage *) imageWithPDFURL:(NSURL *)fileURL fitWidth:(CGFloat)width atPage:(size_t)page scale:(CGFloat)scale
 {
-    if ( URL == nil )
-    {
-        return nil;
-    }
+	CGRect mediaRect = _PDFMediaRect(fileURL, page);
+	CGFloat aspectRatio = mediaRect.size.width / mediaRect.size.height;
     
-    CGRect mediaRect = [ PDFView mediaRectForURL:URL atPage:page ];
+	CGSize size = CGSizeMake (width, ceilf (width / aspectRatio));
     
-    return [ UIImage imageWithPDFURL:URL atSize:mediaRect.size atPage:page ];
+    return [UIImage imageWithPDFURL:fileURL atSize:size atPage:page scale:scale];
 }
 
-+(UIImage *) originalSizeImageWithPDFURL:(NSURL *)URL
+
+
++ (UIImage *) imageWithPDFURL:(NSURL *)fileURL fitHeight:(CGFloat)height atPage:(size_t)page scale:(CGFloat)scale
 {
-    return [ UIImage originalSizeImageWithPDFURL:URL atPage:1 ];
+	CGRect mediaRect = _PDFMediaRect(fileURL, page);
+	CGFloat aspectRatio = mediaRect.size.width / mediaRect.size.height;
+    
+	CGSize size = CGSizeMake (ceilf (height * aspectRatio), height);
+    
+    return [UIImage imageWithPDFURL:fileURL atSize:size atPage:page scale:scale];
 }
 
 
 
 @end
+
+#pragma mark - PDF Helper Routines
+
+static size_t _PDFPageCount(NSURL *pdfURL)
+{
+    NSUInteger pageCount = 0;
+    
+	if (pdfURL)
+	{
+		CGPDFDocumentRef pdf = CGPDFDocumentCreateWithURL ((__bridge CFURLRef) pdfURL);
+		pageCount = CGPDFDocumentGetNumberOfPages (pdf);
+		CGPDFDocumentRelease (pdf);
+	}
+	return pageCount;
+}
+
+static CGRect _PDFMediaRect(NSURL *pdfURL, int page)
+{
+    CGRect rect = CGRectNull;
+    
+	if (pdfURL)
+	{
+		CGPDFDocumentRef pdf = CGPDFDocumentCreateWithURL ((__bridge CFURLRef) pdfURL);
+		CGPDFPageRef pageRef = CGPDFDocumentGetPage (pdf, page);
+        
+		rect = CGPDFPageGetBoxRect (pageRef, kCGPDFCropBox);
+        
+		CGPDFDocumentRelease (pdf);
+	}
+    return rect;
+}
+
+static UIImage *_PDFHelperRenderImage(NSURL *pdfURL, NSData *resourceData, CGSize size, int page, CGFloat scale)
+{
+    UIImage *rendered = nil;
+    
+    if (!pdfURL && !resourceData) return nil;
+    
+    /* Get a PDFDocumentRef */
+    
+    CGPDFDocumentRef pdf = NULL;
+    if (pdfURL)
+    {
+        pdf = CGPDFDocumentCreateWithURL ((__bridge CFURLRef) pdfURL);
+    }
+    else
+    {
+        CGDataProviderRef provider = CGDataProviderCreateWithCFData ((__bridge CFDataRef)resourceData);
+        pdf = CGPDFDocumentCreateWithProvider (provider);
+        CGDataProviderRelease (provider);
+    }
+    
+    
+    CGPDFPageRef pageRef = CGPDFDocumentGetPage (pdf, page);
+    CGRect mediaRect = CGPDFPageGetBoxRect (pageRef, kCGPDFCropBox);
+    
+    
+    /* If user asked for full PDF size, use the reported PDF media box size. */
+    if (CGSizeEqualToSize(size, CGSizeZero)) {
+        size = mediaRect.size;
+    }
+    
+    UIGraphicsBeginImageContextWithOptions (size, NO /*opaque*/, scale);
+    CGContextRef bitmapContext = UIGraphicsGetCurrentContext();
+    
+    /*
+     * Reference: http://www.cocoanetics.com/2010/06/rendering-pdf-is-easier-than-you-thought/
+     */
+    CGContextGetCTM (bitmapContext);
+    CGContextScaleCTM (bitmapContext, 1, -1);
+    CGContextTranslateCTM (bitmapContext, 0, -size.height);
+    
+    CGContextScaleCTM (bitmapContext, size.width / mediaRect.size.width, size.height / mediaRect.size.height);
+    CGContextTranslateCTM (bitmapContext, -mediaRect.origin.x, -mediaRect.origin.y);
+    
+    CGContextDrawPDFPage (bitmapContext, pageRef);
+    CGPDFDocumentRelease (pdf);
+    
+    rendered = UIGraphicsGetImageFromCurrentImageContext();
+    
+    UIGraphicsEndImageContext();
+	
+    
+    return rendered;
+}
+
